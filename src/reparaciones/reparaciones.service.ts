@@ -133,20 +133,6 @@ export class ReparacionesService {
     return this.reparacionRepo.save(falla);
   }
 
-  /** Cerrar/completar reparación por id (opcional) */
-  /*  async cerrarReparacion(id: number, dto: CerrarReparacionDto) {
-    const rep = await this.reparacionRepo.findOne({ where: { id } });
-    if (!rep) throw new NotFoundException('Reparación no encontrada');
-
-    rep.fechaSolucion = dto.fechaSolucion ? this.parseFecha(dto.fechaSolucion) : new Date();
-    if (dto.tecnico) rep.tecnico = dto.tecnico;
-    if (dto.diagnostico) rep.diagnostico = dto.diagnostico;
-    if (dto.accionesRealizadas) rep.accionesRealizadas = dto.accionesRealizadas;
-    rep.estado = EstadoReparacion.COMPLETADA;
-
-    return this.reparacionRepo.save(rep);
-  }
- */
   /** Utilidad: "dd/MM/yyyy" → Date */
   private parseFecha(value: string): Date {
     const parts = value.trim().split('/');
@@ -161,5 +147,155 @@ export class ReparacionesService {
       throw new BadRequestException('Fecha inválida. Formato esperado: dd/MM/yyyy');
     }
     return new Date(y, m - 1, d);
+  }
+
+  async encontrarAbiertaPorCodigo(codigo: string) {
+    if (!codigo?.trim()) return null;
+
+    const abierta = await this.reparacionRepo.findOne({
+      where: [
+        { codigoComputadora: codigo, estado: In([EstadoReparacion.REGISTRADA, EstadoReparacion.EN_REPARACION]) },
+        { codigoImpresora: codigo, estado: In([EstadoReparacion.REGISTRADA, EstadoReparacion.EN_REPARACION]) }
+      ],
+      order: { fechaRegistro: 'DESC' }
+    });
+
+    return abierta; // puede ser null
+  }
+
+  /** Historial por código de equipo (C-### o I-###) */
+  async historialPorCodigo2(codigo: string) {
+    const cod = (codigo ?? '').trim();
+    if (!cod) {
+      throw new BadRequestException('codigo es requerido');
+    }
+
+    const esComputadora = cod.startsWith('C-');
+    const esImpresora = cod.startsWith('I-');
+    if (!esComputadora && !esImpresora) {
+      throw new BadRequestException('Código inválido: debe comenzar con "C-" o "I-".');
+    }
+
+    // Verificar existencia del equipo
+    if (esComputadora) {
+      const comp = await this.computadoraRepo.findOne({ where: { codigo: cod } });
+      if (!comp) throw new NotFoundException(`Computadora ${cod} no encontrada`);
+    } else {
+      const imp = await this.impresoraRepo.findOne({ where: { codigo: cod } });
+      if (!imp) throw new NotFoundException(`Impresora ${cod} no encontrada`);
+    }
+
+    // Traer historial ordenado por fechaRegistro DESC
+    const reparaciones = await this.reparacionRepo.find({
+      where: [{ codigoComputadora: cod }, { codigoImpresora: cod }],
+      order: { fechaRegistro: 'DESC' }
+      // relations: ['computadora', 'impresora'], // opcional si querés más info del equipo
+    });
+
+    if (!reparaciones.length) {
+      // Si prefieres 200 con lista vacía, cambia por: return { codigo: cod, total: 0, items: [] };
+      throw new NotFoundException(`No hay reparaciones para el equipo ${cod}.`);
+    }
+
+    // Mapear salida con fechas formateadas
+    const items = reparaciones.map((r) => ({
+      id: r.id,
+      tipoEvento: r.tipoEvento,
+      tipoEquipo: r.tipoEquipo, // 'computadora' | 'impresora'
+      descripcionProblema: r.descripcionProblema,
+      estado: r.estado, // registrada | en_reparacion | completada | cancelada
+      fechaRegistro: this.toDDMMYYYY(r.fechaRegistro),
+      fechaReparacion: this.toDDMMYYYY(r.fechaReparacion),
+      fechaSolucion: this.toDDMMYYYY(r.fechaReparacion),
+      diagnostico: r.diagnostico ?? null,
+      accionesRealizadas: r.accionesRealizadas ?? null,
+      tecnico: r.tecnico ?? null
+    }));
+
+    return {
+      codigo: cod,
+      total: items.length,
+      items
+    };
+  }
+
+  /** Utilidad: Date -> "dd/MM/yyyy" (o null si no hay fecha) */
+  private toDDMMYYYY(date?: Date | null): string | null {
+    if (!date) return null;
+    const d = date instanceof Date ? date : new Date(date);
+    const dd = String(d.getDate()).padStart(2, '0');
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const yyyy = d.getFullYear();
+    return `${dd}/${mm}/${yyyy}`;
+  }
+
+  /** Historial + datos del equipo por código (C-### o I-###) */
+  async historialPorCodigo(codigo: string) {
+    const cod = (codigo ?? '').trim();
+    if (!cod) throw new BadRequestException('codigo es requerido');
+
+    const esComputadora = cod.startsWith('C-');
+    const esImpresora = cod.startsWith('I-');
+    if (!esComputadora && !esImpresora) {
+      throw new BadRequestException('Código inválido: debe comenzar con "C-" o "I-".');
+    }
+
+    let equipo: any = null;
+
+    if (esComputadora) {
+      const comp = await this.computadoraRepo.findOne({ where: { codigo: cod } });
+      if (!comp) throw new NotFoundException(`Computadora ${cod} no encontrada`);
+
+      equipo = {
+        tipo: 'computadora',
+        codigo: comp.codigo,
+        marca: comp.marca,
+        procesador: comp.procesador,
+        tipoAlmacenamiento: comp.tipoAlmacenamiento,
+        ram: comp.ram,
+        sistemaOperativo: comp.sistemaOperativo
+      };
+    } else {
+      const imp = await this.impresoraRepo.findOne({ where: { codigo: cod } });
+      if (!imp) throw new NotFoundException(`Impresora ${cod} no encontrada`);
+
+      equipo = {
+        tipo: 'impresora',
+        codigo: imp.codigo,
+        modelo: imp.modelo,
+        tipoImpresora: imp.tipo, // Laser | Inyeccion | ...
+        conectividad: imp.conectividad,
+        compatibilidad: imp.compatibilidad,
+        software_o_driver: imp.software_o_driver,
+        departamento: imp.departamento ?? null
+      };
+    }
+
+    const reparaciones = await this.reparacionRepo.find({
+      where: [{ codigoComputadora: cod }, { codigoImpresora: cod }],
+      order: { fechaRegistro: 'DESC' }
+    });
+
+    const items = reparaciones.map((r) => ({
+      codigoReparacion: `R-${String(r.id).padStart(3, '0')}`,
+      id: r.id, // sigo enviando el id por si lo necesitás
+      tipoEvento: r.tipoEvento,
+      tipoEquipo: r.tipoEquipo,
+      descripcionProblema: r.descripcionProblema,
+      estado: r.estado,
+      fechaRegistro: this.toDDMMYYYY(r.fechaRegistro),
+      fechaReparacion: this.toDDMMYYYY(r.fechaReparacion),
+      fechaSolucion: this.toDDMMYYYY(r.fechaReparacion),
+      diagnostico: r.diagnostico ?? null,
+      accionesRealizadas: r.accionesRealizadas ?? null,
+      tecnico: r.tecnico ?? null
+    }));
+
+    return {
+      codigo: cod,
+      equipo, // ← agregado
+      total: items.length,
+      items
+    };
   }
 }
