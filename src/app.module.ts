@@ -5,12 +5,14 @@ import { ConfigModule } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ReparacionesModule } from './reparaciones/reparaciones.module';
 import { EquiposModule } from './equipos/equipos.module';
+import { Solicitud } from './solicitudes/solicitudes.entity';
+import { SolicitudesModule } from './solicitudes/solicitudes.module';
 
 @Module({
   imports: [
     ConfigModule.forRoot({
       envFilePath: './.env',
-      isGlobal: true,
+      isGlobal: true
     }),
     TypeOrmModule.forRoot({
       type: 'mysql',
@@ -23,12 +25,13 @@ import { EquiposModule } from './equipos/equipos.module';
       synchronize: true,
       entities: ['dist/**/*.entity{.ts,.js}'],
       retryDelay: 3000,
-      retryAttempts: 10,
+      retryAttempts: 10
     }),
     ReparacionesModule,
     EquiposModule,
+    SolicitudesModule
   ],
   controllers: [AppController],
-  providers: [AppService],
+  providers: [AppService]
 })
 export class AppModule {}
